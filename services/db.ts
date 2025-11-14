@@ -1,5 +1,6 @@
 import { Submission, AnswerOption, Appeal } from '../types';
 import { DEFAULT_ADMIN_ANSWERS } from '../constants';
+import { db } from './firebase';
 
 export interface DBState {
   submissions: Submission[];
@@ -9,61 +10,42 @@ export interface DBState {
   formTitle: string;
 }
 
-// Migrated to jsonblob.com for better write reliability.
-// This new endpoint should resolve the "failed to save" errors.
-const DB_URL = 'https://jsonblob.com/api/jsonBlob/1258957827829768192';
-
+const docRef = db.collection("appState").doc("singleton");
 
 export const defaultState: DBState = {
   submissions: [],
   adminAnswers: DEFAULT_ADMIN_ANSWERS,
   appeals: [],
   appealDeadline: '',
-  // Aligning title with metadata for consistency
   formTitle: 'SIMULADO 01 - ALE RO - ASSISTENTE LEGISLATIVO (RANKING)',
 };
 
 export const getData = async (): Promise<DBState> => {
   try {
-    // Adding a no-cache header to ensure we always get the latest data.
-    const response = await fetch(DB_URL, { cache: 'no-cache' });
-    if (!response.ok) {
-      console.error("Failed to fetch from remote DB, using default state.", response.statusText);
-      return { ...defaultState };
-    }
-    const storedData = await response.json();
-    
-    if (!storedData || typeof storedData !== 'object' || !storedData.submissions) {
-        console.warn("Remote data is malformed, using default state.");
-        return { ...defaultState };
-    }
+    const docSnap = await docRef.get();
 
-    // Merge with default state to handle new properties if the schema evolves.
-    return { ...defaultState, ...storedData };
+    if (docSnap.exists) {
+      // Merge with default state to handle schema changes gracefully
+      return { ...defaultState, ...docSnap.data() as DBState };
+    } else {
+      // Document doesn't exist, so initialize it with the default state
+      console.log("No document found in Firestore. Initializing with default state.");
+      await setData(defaultState);
+      return defaultState;
+    }
   } catch (error) {
-    console.error("Failed to read from remote DB, using default state.", error);
+    console.error("Failed to read from Firestore, using default state.", error);
+    // Provide default state on error to prevent app crash
     return { ...defaultState };
   }
 };
 
 export const setData = async (data: DBState): Promise<void> => {
   try {
-    const response = await fetch(DB_URL, {
-      method: 'PUT', // jsonblob.com uses PUT to update an existing record
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      },
-      body: JSON.stringify(data),
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      console.error("Failed to write to remote DB. Status:", response.status, "Body:", errorBody);
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
+    await docRef.set(data);
   } catch (error) {
-    console.error("Failed to write to remote DB.", error);
+    console.error("Failed to write to Firestore.", error);
+    // Re-throw the error so the UI can notify the user
     throw error;
   }
 };
