@@ -1,0 +1,5 @@
+{
+  "name": "SIMULADO 01 - ALE RO - ASSISTENTE LEGISLATIVO (RANKING)",
+  "description": "Um aplicativo de formulário para os usuários preencherem um gabarito de 80 questões, receberem uma pontuação e verem sua classificação em um ranking. O aplicativo impede envios duplicados e fornece um script de incorporação.",
+  "requestFramePermissions": []
+}
