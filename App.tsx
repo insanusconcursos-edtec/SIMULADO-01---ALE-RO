@@ -7,7 +7,8 @@ import AdminView from './components/AdminView';
 import AdminLogin from './components/AdminLogin';
 import UserAppeals from './components/UserAppeals';
 import { User, UserAnswers, Submission, AnswerOption, ApprovalStatus, Appeal } from './types';
-import { useLocalStorage } from './hooks/useLocalStorage';
+import * as db from './services/db';
+import { DBState } from './services/db';
 import { DEFAULT_ADMIN_ANSWERS, POINTS_PART_1, POINTS_PART_2, SCORING_BREAKPOINT, MAX_POSSIBLE_SCORE, ADMIN_USERNAME, ADMIN_PASSWORD, TOTAL_QUESTIONS } from './constants';
 
 type View = 'identification' | 'answersheet' | 'results' | 'ranking' | 'appeals';
@@ -126,24 +127,34 @@ const UserNavigation: React.FC<UserNavigationProps> = ({ currentView, onViewChan
 
 
 const App: React.FC = () => {
+  const [appState, setAppState] = useState<DBState | null>(null);
+  
   const [view, setView] = useState<View>('identification');
   const [isAdminView, setIsAdminView] = useState(false);
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   
-  const [submissions, setSubmissions] = useLocalStorage<Submission[]>('submissions', []);
-  const [adminAnswers, setAdminAnswers] = useLocalStorage<Record<number, AnswerOption>>('admin-answers', DEFAULT_ADMIN_ANSWERS);
-  const [appeals, setAppeals] = useLocalStorage<Appeal[]>('appeals', []);
-  const [appealDeadline, setAppealDeadline] = useLocalStorage<string>('appeal-deadline', '');
-  const [formTitle, setFormTitle] = useLocalStorage<string>('form-title', 'Formulário de Avaliação');
-
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [userAnswers, setUserAnswers] = useState<UserAnswers>({});
   const [error, setError] = useState<string | null>(null);
   const [lastSubmissionResult, setLastSubmissionResult] = useState<LastSubmissionResult | null>(null);
 
+  useEffect(() => {
+    db.getData().then(setAppState);
+  }, []);
+
+  const updateAndPersistState = useCallback((updater: (prevState: DBState) => DBState) => {
+    setAppState(prevState => {
+        if (!prevState) return null;
+        const newState = updater(prevState);
+        db.setData(newState);
+        return newState;
+    });
+  }, []);
+
   const handleIdentificationSubmit = useCallback((user: User) => {
+    if (!appState) return;
     setError(null);
-    const existingSubmissionByEmailOrCpf = submissions.find(
+    const existingSubmissionByEmailOrCpf = appState.submissions.find(
       sub => sub.user.email === user.email || sub.user.cpf === user.cpf
     );
 
@@ -152,7 +163,7 @@ const App: React.FC = () => {
       return;
     }
     
-    const existingSubmissionByNickname = submissions.find(
+    const existingSubmissionByNickname = appState.submissions.find(
       sub => sub.user.nickname.toLowerCase() === user.nickname.toLowerCase()
     );
 
@@ -163,59 +174,64 @@ const App: React.FC = () => {
 
     setCurrentUser(user);
     setView('answersheet');
-  }, [submissions]);
+  }, [appState]);
 
   const handleAnswersSubmit = useCallback(() => {
-    if (!currentUser) return;
+    if (!currentUser || !appState) return;
 
-    const { score, module1Score, module2Score, status, reprovalReasons } = calculateScoreAndStatus(userAnswers, adminAnswers);
-    const age = calculateAge(currentUser.dob);
+    updateAndPersistState(prev => {
+        const { score, module1Score, module2Score, status, reprovalReasons } = calculateScoreAndStatus(userAnswers, prev.adminAnswers);
+        const age = calculateAge(currentUser.dob);
 
-    const newSubmission: Submission = { 
-      user: currentUser, 
-      score, 
-      answers: userAnswers,
-      status,
-      reprovalReasons: status === 'REPROVADO' ? reprovalReasons : [],
-      age,
-      module1Score,
-      module2Score
-    };
-    
-    const updatedSubmissions = [...submissions, newSubmission];
-    
-    const sortedSubmissions = [...updatedSubmissions].sort((a, b) => {
-        if (b.score !== a.score) return b.score - a.score;
-        const aIsSenior = a.age >= 60;
-        const bIsSenior = b.age >= 60;
-        if (aIsSenior && !bIsSenior) return -1;
-        if (!aIsSenior && bIsSenior) return 1;
-        if (aIsSenior && bIsSenior) return b.age - a.age;
-        if (b.module2Score !== a.module2Score) return b.module2Score - a.module2Score;
-        if (b.module1Score !== a.module1Score) return b.module1Score - a.module1Score;
-        return b.age - a.age; // Older wins if all else is equal
+        const newSubmission: Submission = { 
+            user: currentUser, 
+            score, 
+            answers: userAnswers,
+            status,
+            reprovalReasons: status === 'REPROVADO' ? reprovalReasons : [],
+            age,
+            module1Score,
+            module2Score
+        };
+        
+        const updatedSubmissions = [...prev.submissions, newSubmission];
+        
+        const sortedSubmissions = [...updatedSubmissions].sort((a, b) => {
+            if (b.score !== a.score) return b.score - a.score;
+            const aIsSenior = a.age >= 60;
+            const bIsSenior = b.age >= 60;
+            if (aIsSenior && !bIsSenior) return -1;
+            if (!aIsSenior && bIsSenior) return 1;
+            if (aIsSenior && bIsSenior) return b.age - a.age;
+            if (b.module2Score !== a.module2Score) return b.module2Score - a.module2Score;
+            if (b.module1Score !== a.module1Score) return b.module1Score - a.module1Score;
+            return b.age - a.age; // Older wins if all else is equal
+        });
+
+        const rank = sortedSubmissions.findIndex(sub => sub.user.cpf === currentUser.cpf) + 1;
+
+        setLastSubmissionResult({ 
+            score, 
+            rank, 
+            answers: userAnswers,
+            status,
+            reprovalReasons: status === 'REPROVADO' ? reprovalReasons : undefined
+        });
+
+        return { ...prev, submissions: updatedSubmissions };
     });
 
-    const rank = sortedSubmissions.findIndex(sub => sub.user.cpf === currentUser.cpf) + 1;
-
-    setSubmissions(updatedSubmissions);
-    setLastSubmissionResult({ 
-      score, 
-      rank, 
-      answers: userAnswers,
-      status,
-      reprovalReasons: status === 'REPROVADO' ? reprovalReasons : undefined
-    });
     setView('results');
-  }, [currentUser, userAnswers, submissions, setSubmissions, adminAnswers]);
+  }, [currentUser, userAnswers, appState, updateAndPersistState]);
   
   const handleUserLogin = useCallback((cpf: string) => {
+    if (!appState) return;
     setError(null);
-    const submission = submissions.find(sub => sub.user.cpf === cpf);
+    const submission = appState.submissions.find(sub => sub.user.cpf === cpf);
 
     if (submission) {
-        const approvedSubs = submissions.filter(s => s.status === 'APROVADO').sort((a,b) => b.score - a.score); // Simplified sort for rank
-        const disapprovedSubs = submissions.filter(s => s.status === 'REPROVADO').sort((a,b) => b.score - a.score);
+        const approvedSubs = appState.submissions.filter(s => s.status === 'APROVADO').sort((a,b) => b.score - a.score); // Simplified sort for rank
+        const disapprovedSubs = appState.submissions.filter(s => s.status === 'REPROVADO').sort((a,b) => b.score - a.score);
         
         let rank = -1;
         if (submission.status === 'APROVADO') {
@@ -236,7 +252,7 @@ const App: React.FC = () => {
     } else {
         setError('CPF não encontrado. Por favor, verifique o número digitado ou preencha o gabarito primeiro.');
     }
-  }, [submissions]);
+  }, [appState]);
 
   const handleStartOver = useCallback(() => {
     setCurrentUser(null);
@@ -279,11 +295,15 @@ const App: React.FC = () => {
   }, []);
 
   const handleAdminAnswersSave = useCallback((newAnswers: Record<number, AnswerOption>) => {
-      setAdminAnswers(newAnswers);
-      const recalculated = recalculateAllSubmissions(submissions, newAnswers);
-      setSubmissions(recalculated);
+      if (!appState) return;
+      const recalculated = recalculateAllSubmissions(appState.submissions, newAnswers);
+      updateAndPersistState(prev => ({
+          ...prev,
+          adminAnswers: newAnswers,
+          submissions: recalculated,
+      }));
       alert('Gabarito atualizado e todas as pontuações foram recalculadas!');
-  }, [submissions, setAdminAnswers, setSubmissions, recalculateAllSubmissions]);
+  }, [appState, recalculateAllSubmissions, updateAndPersistState]);
 
   const handleAppealSubmit = useCallback((appealData: Omit<Appeal, 'id' | 'createdAt' | 'status'>) => {
     const newAppeal: Appeal = {
@@ -292,12 +312,12 @@ const App: React.FC = () => {
         createdAt: new Date().toISOString(),
         status: 'PENDING',
     };
-    setAppeals(prev => [...prev, newAppeal]);
-  }, [setAppeals]);
+    updateAndPersistState(prev => ({ ...prev, appeals: [...prev.appeals, newAppeal] }));
+  }, [updateAndPersistState]);
 
   const handleProcessAppeal = useCallback((updatedAppeal: Appeal) => {
       let needsRecalculation = false;
-      let newAdminAnswers = { ...adminAnswers };
+      let newAdminAnswers = { ...appState!.adminAnswers };
 
       if (updatedAppeal.status === 'APPROVED' && updatedAppeal.adminDecision) {
           if (updatedAppeal.adminDecision === 'ANNUL_QUESTION') {
@@ -309,39 +329,66 @@ const App: React.FC = () => {
           }
       }
 
-      setAppeals(prev => prev.map(a => a.id === updatedAppeal.id ? updatedAppeal : a));
+      const updatedAppeals = appState!.appeals.map(a => a.id === updatedAppeal.id ? updatedAppeal : a);
 
       if (needsRecalculation) {
-          handleAdminAnswersSave(newAdminAnswers);
+          const recalculated = recalculateAllSubmissions(appState!.submissions, newAdminAnswers);
+          updateAndPersistState(prev => ({
+              ...prev,
+              appeals: updatedAppeals,
+              adminAnswers: newAdminAnswers,
+              submissions: recalculated,
+          }));
+          alert('Gabarito atualizado e todas as pontuações foram recalculadas!');
       } else {
+          updateAndPersistState(prev => ({ ...prev, appeals: updatedAppeals }));
           alert('Status do recurso atualizado!');
       }
 
-  }, [adminAnswers, setAppeals, handleAdminAnswersSave]);
+  }, [appState, updateAndPersistState, recalculateAllSubmissions]);
   
   const handleResetAllData = useCallback(() => {
-    setSubmissions([]);
-    setAppeals([]);
-    setAdminAnswers(DEFAULT_ADMIN_ANSWERS);
-    setAppealDeadline('');
-    setFormTitle('Formulário de Avaliação');
+    updateAndPersistState(() => ({
+      submissions: [],
+      appeals: [],
+      adminAnswers: DEFAULT_ADMIN_ANSWERS,
+      appealDeadline: '',
+      formTitle: 'Formulário de Avaliação',
+    }));
     alert('Todos os dados foram restaurados para o estado inicial.');
-  }, [setSubmissions, setAppeals, setAdminAnswers, setAppealDeadline, setFormTitle]);
+  }, [updateAndPersistState]);
+
+  const handleSetDeadline = useCallback((deadline: string) => {
+    updateAndPersistState(prev => ({ ...prev, appealDeadline: deadline }));
+  }, [updateAndPersistState]);
+
+  const handleSetFormTitle = useCallback((title: string) => {
+    updateAndPersistState(prev => ({ ...prev, formTitle: title }));
+  }, [updateAndPersistState]);
+
+
+  if (!appState) {
+    return (
+      <div className="min-h-screen flex justify-center items-center">
+        <div className="text-xl font-semibold text-primary animate-pulse">Carregando Sistema...</div>
+      </div>
+    );
+  }
 
   const renderContent = () => {
     if (isAdminView) {
         if (isAdminAuthenticated) {
             return <AdminView 
-                initialAnswers={adminAnswers} 
+                initialAnswers={appState.adminAnswers} 
                 onSave={handleAdminAnswersSave}
-                appeals={appeals}
+                appeals={appState.appeals}
                 onProcessAppeal={handleProcessAppeal}
-                deadline={appealDeadline}
-                onSetDeadline={setAppealDeadline}
+                deadline={appState.appealDeadline}
+                onSetDeadline={handleSetDeadline}
                 onResetAllData={handleResetAllData}
-                formTitle={formTitle}
-                onSetFormTitle={setFormTitle}
-                submissions={submissions}
+                formTitle={appState.formTitle}
+                onSetFormTitle={handleSetFormTitle}
+                submissions={appState.submissions}
             />;
         }
         return <AdminLogin onLogin={handleAdminLogin} error={error} />;
@@ -359,7 +406,7 @@ const App: React.FC = () => {
     }
     
     if (!currentUser || !lastSubmissionResult) {
-        return <IdentificationForm onSubmit={handleIdentificationSubmit} onLogin={handleUserLogin} submissions={submissions} error={error} />;
+        return <IdentificationForm onSubmit={handleIdentificationSubmit} onLogin={handleUserLogin} submissions={appState.submissions} error={error} />;
     }
     
     // Logged-in user view
@@ -372,18 +419,18 @@ const App: React.FC = () => {
                     totalPoints={MAX_POSSIBLE_SCORE}
                     rank={lastSubmissionResult.rank}
                     userAnswers={lastSubmissionResult.answers}
-                    adminAnswers={adminAnswers}
+                    adminAnswers={appState.adminAnswers}
                     status={lastSubmissionResult.status}
                     reprovalReasons={lastSubmissionResult.reprovalReasons}
                 />
             )}
-            {view === 'ranking' && <Ranking submissions={submissions} currentUserCpf={currentUser.cpf} />}
+            {view === 'ranking' && <Ranking submissions={appState.submissions} currentUserCpf={currentUser.cpf} />}
             {view === 'appeals' && (
                 <UserAppeals
                     currentUser={currentUser}
-                    allAppeals={appeals}
+                    allAppeals={appState.appeals}
                     onSubmitAppeal={handleAppealSubmit}
-                    appealDeadline={appealDeadline}
+                    appealDeadline={appState.appealDeadline}
                 />
             )}
         </>
@@ -393,7 +440,7 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen bg-gray-100 text-textPrimary flex flex-col items-center p-4 sm:p-6 lg:p-8 font-sans">
         <header className="w-full max-w-5xl mb-8 text-center relative">
-            <h1 className="text-4xl sm:text-5xl font-bold text-primary">{formTitle}</h1>
+            <h1 className="text-4xl sm:text-5xl font-bold text-primary">{appState.formTitle}</h1>
             <p className="text-lg text-textSecondary mt-2">
               {isAdminView ? 'Painel do Administrador' : 'Preencha seus dados, responda as questões e veja sua pontuação no ranking!'}
             </p>
