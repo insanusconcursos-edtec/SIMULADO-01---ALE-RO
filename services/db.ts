@@ -9,9 +9,10 @@ export interface DBState {
   formTitle: string;
 }
 
-// Using npoint.io as a simple, free JSON store.
-// This new endpoint was created to resolve the recurring "Failed to fetch" errors.
-const DB_URL = 'https://api.npoint.io/e9914b43486a47a06f23';
+// Migrated to jsonblob.com for better write reliability.
+// This new endpoint should resolve the "failed to save" errors.
+const DB_URL = 'https://jsonblob.com/api/jsonBlob/1258957827829768192';
+
 
 export const defaultState: DBState = {
   submissions: [],
@@ -48,14 +49,17 @@ export const getData = async (): Promise<DBState> => {
 export const setData = async (data: DBState): Promise<void> => {
   try {
     const response = await fetch(DB_URL, {
-      method: 'POST', // npoint.io uses POST to update
+      method: 'PUT', // jsonblob.com uses PUT to update an existing record
       headers: {
         'Content-Type': 'application/json',
+        'Accept': 'application/json',
       },
       body: JSON.stringify(data),
     });
 
     if (!response.ok) {
+      const errorBody = await response.text();
+      console.error("Failed to write to remote DB. Status:", response.status, "Body:", errorBody);
       throw new Error(`HTTP error! status: ${response.status}`);
     }
   } catch (error) {
