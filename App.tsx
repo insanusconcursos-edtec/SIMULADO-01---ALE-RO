@@ -9,7 +9,7 @@ import UserAppeals from './components/UserAppeals';
 import { User, UserAnswers, Submission, AnswerOption, ApprovalStatus, Appeal } from './types';
 import * as db from './services/db';
 import { DBState } from './services/db';
-import { DEFAULT_ADMIN_ANSWERS, POINTS_PART_1, POINTS_PART_2, SCORING_BREAKPOINT, MAX_POSSIBLE_SCORE, ADMIN_USERNAME, ADMIN_PASSWORD, TOTAL_QUESTIONS } from './constants';
+import { POINTS_PART_1, POINTS_PART_2, SCORING_BREAKPOINT, MAX_POSSIBLE_SCORE, ADMIN_USERNAME, ADMIN_PASSWORD, TOTAL_QUESTIONS } from './constants';
 
 type View = 'identification' | 'answersheet' | 'results' | 'ranking' | 'appeals';
 
@@ -142,14 +142,12 @@ const App: React.FC = () => {
     db.getData().then(setAppState);
   }, []);
 
-  const updateAndPersistState = useCallback((updater: (prevState: DBState) => DBState) => {
-    setAppState(prevState => {
-        if (!prevState) return null;
-        const newState = updater(prevState);
-        db.setData(newState);
-        return newState;
-    });
-  }, []);
+  // Refetch data when navigating to views that need to be up-to-date
+  useEffect(() => {
+      if (view === 'ranking' || view === 'appeals') {
+          db.getData().then(setAppState);
+      }
+  }, [view]);
 
   const handleIdentificationSubmit = useCallback((user: User) => {
     if (!appState) return;
@@ -176,11 +174,15 @@ const App: React.FC = () => {
     setView('answersheet');
   }, [appState]);
 
-  const handleAnswersSubmit = useCallback(() => {
-    if (!currentUser || !appState) return;
+  const handleAnswersSubmit = useCallback(async () => {
+    if (!currentUser) return;
 
-    updateAndPersistState(prev => {
-        const { score, module1Score, module2Score, status, reprovalReasons } = calculateScoreAndStatus(userAnswers, prev.adminAnswers);
+    try {
+        // 1. READ the latest state
+        const latestState = await db.getData();
+
+        // 2. MODIFY: Add the new submission
+        const { score, module1Score, module2Score, status, reprovalReasons } = calculateScoreAndStatus(userAnswers, latestState.adminAnswers);
         const age = calculateAge(currentUser.dob);
 
         const newSubmission: Submission = { 
@@ -194,8 +196,13 @@ const App: React.FC = () => {
             module2Score
         };
         
-        const updatedSubmissions = [...prev.submissions, newSubmission];
-        
+        const updatedSubmissions = [...latestState.submissions, newSubmission];
+        const newState = { ...latestState, submissions: updatedSubmissions };
+
+        // 3. WRITE the new state back
+        await db.setData(newState);
+
+        // 4. Update local UI state
         const sortedSubmissions = [...updatedSubmissions].sort((a, b) => {
             if (b.score !== a.score) return b.score - a.score;
             const aIsSenior = a.age >= 60;
@@ -205,7 +212,7 @@ const App: React.FC = () => {
             if (aIsSenior && bIsSenior) return b.age - a.age;
             if (b.module2Score !== a.module2Score) return b.module2Score - a.module2Score;
             if (b.module1Score !== a.module1Score) return b.module1Score - a.module1Score;
-            return b.age - a.age; // Older wins if all else is equal
+            return b.age - a.age;
         });
 
         const rank = sortedSubmissions.findIndex(sub => sub.user.cpf === currentUser.cpf) + 1;
@@ -218,11 +225,12 @@ const App: React.FC = () => {
             reprovalReasons: status === 'REPROVADO' ? reprovalReasons : undefined
         });
 
-        return { ...prev, submissions: updatedSubmissions };
-    });
-
-    setView('results');
-  }, [currentUser, userAnswers, appState, updateAndPersistState]);
+        setAppState(newState);
+        setView('results');
+    } catch (e) {
+        setError('Falha ao enviar o gabarito. Verifique sua conexão e tente novamente.');
+    }
+  }, [currentUser, userAnswers]);
   
   const handleUserLogin = useCallback((cpf: string) => {
     if (!appState) return;
@@ -294,77 +302,111 @@ const App: React.FC = () => {
       });
   }, []);
 
-  const handleAdminAnswersSave = useCallback((newAnswers: Record<number, AnswerOption>) => {
-      if (!appState) return;
-      const recalculated = recalculateAllSubmissions(appState.submissions, newAnswers);
-      updateAndPersistState(prev => ({
-          ...prev,
-          adminAnswers: newAnswers,
-          submissions: recalculated,
-      }));
-      alert('Gabarito atualizado e todas as pontuações foram recalculadas!');
-  }, [appState, recalculateAllSubmissions, updateAndPersistState]);
+  const handleAdminAnswersSave = useCallback(async (newAnswers: Record<number, AnswerOption>) => {
+      try {
+        const latestState = await db.getData();
+        const recalculated = recalculateAllSubmissions(latestState.submissions, newAnswers);
+        const newState = {
+            ...latestState,
+            adminAnswers: newAnswers,
+            submissions: recalculated,
+        };
+        await db.setData(newState);
+        setAppState(newState);
+        alert('Gabarito atualizado e todas as pontuações foram recalculadas!');
+      } catch (e) {
+        alert('Falha ao salvar o gabarito. Verifique sua conexão.');
+      }
+  }, [recalculateAllSubmissions]);
 
-  const handleAppealSubmit = useCallback((appealData: Omit<Appeal, 'id' | 'createdAt' | 'status'>) => {
+  const handleAppealSubmit = useCallback(async (appealData: Omit<Appeal, 'id' | 'createdAt' | 'status'>) => {
     const newAppeal: Appeal = {
         ...appealData,
         id: `appeal-${Date.now()}-${Math.random()}`,
         createdAt: new Date().toISOString(),
         status: 'PENDING',
     };
-    updateAndPersistState(prev => ({ ...prev, appeals: [...prev.appeals, newAppeal] }));
-  }, [updateAndPersistState]);
+    try {
+        const latestState = await db.getData();
+        const newState = { ...latestState, appeals: [...latestState.appeals, newAppeal] };
+        await db.setData(newState);
+        setAppState(newState);
+    } catch (e) {
+        alert('Falha ao enviar recurso. Verifique sua conexão.');
+    }
+  }, []);
 
-  const handleProcessAppeal = useCallback((updatedAppeal: Appeal) => {
-      let needsRecalculation = false;
-      let newAdminAnswers = { ...appState!.adminAnswers };
+  const handleProcessAppeal = useCallback(async (updatedAppeal: Appeal) => {
+    try {
+        const latestState = await db.getData();
+        let needsRecalculation = false;
+        let newAdminAnswers = { ...latestState.adminAnswers };
 
-      if (updatedAppeal.status === 'APPROVED' && updatedAppeal.adminDecision) {
-          if (updatedAppeal.adminDecision === 'ANNUL_QUESTION') {
-              newAdminAnswers[updatedAppeal.questionNumber] = 'X';
-              needsRecalculation = true;
-          } else if (updatedAppeal.adminDecision === 'CHANGE_ANSWER' && updatedAppeal.newAnswer) {
-              newAdminAnswers[updatedAppeal.questionNumber] = updatedAppeal.newAnswer;
-              needsRecalculation = true;
-          }
-      }
+        if (updatedAppeal.status === 'APPROVED' && updatedAppeal.adminDecision) {
+            if (updatedAppeal.adminDecision === 'ANNUL_QUESTION') {
+                newAdminAnswers[updatedAppeal.questionNumber] = 'X';
+                needsRecalculation = true;
+            } else if (updatedAppeal.adminDecision === 'CHANGE_ANSWER' && updatedAppeal.newAnswer) {
+                newAdminAnswers[updatedAppeal.questionNumber] = updatedAppeal.newAnswer;
+                needsRecalculation = true;
+            }
+        }
 
-      const updatedAppeals = appState!.appeals.map(a => a.id === updatedAppeal.id ? updatedAppeal : a);
+        const updatedAppeals = latestState.appeals.map(a => a.id === updatedAppeal.id ? updatedAppeal : a);
+        let newState: DBState;
 
-      if (needsRecalculation) {
-          const recalculated = recalculateAllSubmissions(appState!.submissions, newAdminAnswers);
-          updateAndPersistState(prev => ({
-              ...prev,
-              appeals: updatedAppeals,
-              adminAnswers: newAdminAnswers,
-              submissions: recalculated,
-          }));
-          alert('Gabarito atualizado e todas as pontuações foram recalculadas!');
-      } else {
-          updateAndPersistState(prev => ({ ...prev, appeals: updatedAppeals }));
-          alert('Status do recurso atualizado!');
-      }
+        if (needsRecalculation) {
+            const recalculated = recalculateAllSubmissions(latestState.submissions, newAdminAnswers);
+            newState = {
+                ...latestState,
+                appeals: updatedAppeals,
+                adminAnswers: newAdminAnswers,
+                submissions: recalculated,
+            };
+            alert('Gabarito atualizado e todas as pontuações foram recalculadas!');
+        } else {
+            newState = { ...latestState, appeals: updatedAppeals };
+            alert('Status do recurso atualizado!');
+        }
 
-  }, [appState, updateAndPersistState, recalculateAllSubmissions]);
+        await db.setData(newState);
+        setAppState(newState);
+    } catch (e) {
+        alert('Falha ao processar o recurso. Verifique sua conexão.');
+    }
+  }, [recalculateAllSubmissions]);
   
-  const handleResetAllData = useCallback(() => {
-    updateAndPersistState(() => ({
-      submissions: [],
-      appeals: [],
-      adminAnswers: DEFAULT_ADMIN_ANSWERS,
-      appealDeadline: '',
-      formTitle: 'Formulário de Avaliação',
-    }));
-    alert('Todos os dados foram restaurados para o estado inicial.');
-  }, [updateAndPersistState]);
+  const handleResetAllData = useCallback(async () => {
+    try {
+        await db.setData(db.defaultState);
+        setAppState(db.defaultState);
+        alert('Todos os dados foram restaurados para o estado inicial.');
+    } catch (e) {
+        alert('Falha ao restaurar os dados. Verifique sua conexão e tente novamente.');
+    }
+  }, []);
 
-  const handleSetDeadline = useCallback((deadline: string) => {
-    updateAndPersistState(prev => ({ ...prev, appealDeadline: deadline }));
-  }, [updateAndPersistState]);
+  const handleSetDeadline = useCallback(async (deadline: string) => {
+    try {
+        const latestState = await db.getData();
+        const newState = { ...latestState, appealDeadline: deadline };
+        await db.setData(newState);
+        setAppState(newState);
+    } catch (e) {
+        alert('Falha ao definir prazo. Verifique sua conexão.');
+    }
+  }, []);
 
-  const handleSetFormTitle = useCallback((title: string) => {
-    updateAndPersistState(prev => ({ ...prev, formTitle: title }));
-  }, [updateAndPersistState]);
+  const handleSetFormTitle = useCallback(async (title: string) => {
+    try {
+        const latestState = await db.getData();
+        const newState = { ...latestState, formTitle: title };
+        await db.setData(newState);
+        setAppState(newState);
+    } catch (e) {
+        alert('Falha ao definir título. Verifique sua conexão.');
+    }
+  }, []);
 
 
   if (!appState) {

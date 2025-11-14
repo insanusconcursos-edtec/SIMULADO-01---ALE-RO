@@ -9,10 +9,10 @@ export interface DBState {
   formTitle: string;
 }
 
-const DB_KEY = 'gabarito-app-db';
+// A public, free JSON store. For a production app, use a proper backend database.
+const DB_URL = 'https://api.npoint.io/0e4741398c49e7b39a38';
 
-// This is the initial state for a fresh deployment.
-const defaultState: DBState = {
+export const defaultState: DBState = {
   submissions: [],
   adminAnswers: DEFAULT_ADMIN_ANSWERS,
   appeals: [],
@@ -20,37 +20,45 @@ const defaultState: DBState = {
   formTitle: 'Formulário de Avaliação',
 };
 
-// Simulate async API calls. In a real application, these would be fetch requests.
 export const getData = async (): Promise<DBState> => {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      try {
-        const item = window.localStorage.getItem(DB_KEY);
-        if (item) {
-          // Merge with default state to handle schema changes over time
-          const storedData = JSON.parse(item);
-          resolve({ ...defaultState, ...storedData });
-        } else {
-          resolve(defaultState);
-        }
-      } catch (error) {
-        console.error("Failed to read from storage, using default state.", error);
-        resolve(defaultState);
-      }
-    }, 250); // Simulate network latency
-  });
+  try {
+    // Use cache-busting to ensure the latest data is fetched.
+    const response = await fetch(`${DB_URL}?t=${new Date().getTime()}`);
+    if (!response.ok) {
+      console.error("Failed to fetch from remote DB, using default state.", response.statusText);
+      return defaultState;
+    }
+    const storedData = await response.json();
+    
+    if (Object.keys(storedData).length === 0) {
+      return defaultState;
+    }
+
+    // Merge with default state to handle new properties if the schema evolves.
+    return { ...defaultState, ...storedData };
+  } catch (error) {
+    console.error("Failed to read from remote DB, using default state.", error);
+    return defaultState;
+  }
 };
 
 export const setData = async (data: DBState): Promise<void> => {
-  return new Promise((resolve, reject) => {
-    setTimeout(() => {
-      try {
-        window.localStorage.setItem(DB_KEY, JSON.stringify(data));
-        resolve();
-      } catch (error) {
-        console.error("Failed to write to storage.", error);
-        reject(error);
-      }
-    }, 100); // Shorter latency for writes
-  });
+  try {
+    const response = await fetch(DB_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(data),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+  } catch (error) {
+    console.error("Failed to write to remote DB.", error);
+    // In a real app, you might want to throw the error
+    // to let the caller handle it (e.g., show an error message).
+    throw error;
+  }
 };
