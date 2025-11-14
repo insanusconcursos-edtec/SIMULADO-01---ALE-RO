@@ -9,43 +9,46 @@ export interface DBState {
   formTitle: string;
 }
 
-// A public, free JSON store. For a production app, use a proper backend database.
-const DB_URL = 'https://api.npoint.io/0e4741398c49e7b39a38';
+// Using npoint.io as a simple, free JSON store.
+// This new endpoint was created to resolve the recurring "Failed to fetch" errors.
+const DB_URL = 'https://api.npoint.io/e9914b43486a47a06f23';
 
 export const defaultState: DBState = {
   submissions: [],
   adminAnswers: DEFAULT_ADMIN_ANSWERS,
   appeals: [],
   appealDeadline: '',
-  formTitle: 'Formulário de Avaliação',
+  // Aligning title with metadata for consistency
+  formTitle: 'SIMULADO 01 - ALE RO - ASSISTENTE LEGISLATIVO (RANKING)',
 };
 
 export const getData = async (): Promise<DBState> => {
   try {
-    // Use cache-busting to ensure the latest data is fetched.
-    const response = await fetch(`${DB_URL}?t=${new Date().getTime()}`);
+    // Adding a no-cache header to ensure we always get the latest data.
+    const response = await fetch(DB_URL, { cache: 'no-cache' });
     if (!response.ok) {
       console.error("Failed to fetch from remote DB, using default state.", response.statusText);
-      return defaultState;
+      return { ...defaultState };
     }
     const storedData = await response.json();
     
-    if (Object.keys(storedData).length === 0) {
-      return defaultState;
+    if (!storedData || typeof storedData !== 'object' || !storedData.submissions) {
+        console.warn("Remote data is malformed, using default state.");
+        return { ...defaultState };
     }
 
     // Merge with default state to handle new properties if the schema evolves.
     return { ...defaultState, ...storedData };
   } catch (error) {
     console.error("Failed to read from remote DB, using default state.", error);
-    return defaultState;
+    return { ...defaultState };
   }
 };
 
 export const setData = async (data: DBState): Promise<void> => {
   try {
     const response = await fetch(DB_URL, {
-      method: 'POST',
+      method: 'POST', // npoint.io uses POST to update
       headers: {
         'Content-Type': 'application/json',
       },
@@ -57,8 +60,6 @@ export const setData = async (data: DBState): Promise<void> => {
     }
   } catch (error) {
     console.error("Failed to write to remote DB.", error);
-    // In a real app, you might want to throw the error
-    // to let the caller handle it (e.g., show an error message).
     throw error;
   }
 };
